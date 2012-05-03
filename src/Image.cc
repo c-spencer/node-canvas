@@ -750,7 +750,7 @@ Image::decodeJPEGIntoSurface(jpeg_decompress_struct *info) {
   height = info->output_height;
   int stride = width * 4;
   data = (uint8_t *) malloc(width * height * 4);
-  src = (uint8_t *) malloc(width * 3);
+  src = (uint8_t *) malloc(width * info->output_components);
 
   if (!data || !src) {
     free(data);
