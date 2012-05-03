@@ -47,8 +47,6 @@ typedef struct {
 
 void
 handle_jpeg_error (j_common_ptr cinfo) {
-  printf("Aborting JPEG decode, REASON: %s\n"
-    , cinfo->err->jpeg_message_table[cinfo->err->msg_code]);
   longjmp(((jpeg_error_manager *) cinfo->err)->setjmp_buffer, 1);
 }
 
@@ -398,19 +396,24 @@ Image::load() {
 void
 Image::loaded() {
   HandleScope scope;
-  state = COMPLETE;
 
   width = cairo_image_surface_get_width(_surface);
   height = cairo_image_surface_get_height(_surface);
   _data_len = height * cairo_image_surface_get_stride(_surface);
   V8::AdjustAmountOfExternalAllocatedMemory(_data_len);
 
-  if (!onload.IsEmpty()) {
-    TryCatch try_catch;
-    onload->Call(Context::GetCurrent()->Global(), 0, NULL);
-    onload.Dispose();
-    if (try_catch.HasCaught()) {
-      error(try_catch.Exception());
+  // At this point we have a valid surface, but may have errored out
+  // inside image decoding. If so, don't run the onload callback.
+  if (state != INVALID) {
+    state = COMPLETE;
+
+    if (!onload.IsEmpty()) {
+      TryCatch try_catch;
+      onload->Call(Context::GetCurrent()->Global(), 0, NULL);
+      onload.Dispose();
+      if (try_catch.HasCaught()) {
+        error(try_catch.Exception());
+      }
     }
   }
 }
@@ -732,6 +735,8 @@ Image::decodeJPEGIntoSurface(jpeg_decompress_struct *info) {
 
   // Set JPEG Error Handler
   if (setjmp(((jpeg_error_manager *) info->err)->setjmp_buffer)) {
+    error(Exception::Error(String::New(info->err->jpeg_message_table[info->err->msg_code])));
+    state = INVALID;
     dispose_jpeg_decompressor(info);
     free(data);
     free(src);
@@ -744,17 +749,12 @@ Image::decodeJPEGIntoSurface(jpeg_decompress_struct *info) {
   width = info->output_width;
   height = info->output_height;
   int stride = width * 4;
-
   data = (uint8_t *) malloc(width * height * 4);
-  if (!data) {
-    dispose_jpeg_decompressor(info);
-    return CAIRO_STATUS_NO_MEMORY;
-  }
-
   src = (uint8_t *) malloc(width * 3);
-  if (!src) {
-    dispose_jpeg_decompressor(info);
+
+  if (!data || !src) {
     free(data);
+    dispose_jpeg_decompressor(info);
     return CAIRO_STATUS_NO_MEMORY;
   }
 
@@ -772,6 +772,7 @@ Image::decodeJPEGIntoSurface(jpeg_decompress_struct *info) {
   }
 
   dispose_jpeg_decompressor(info);
+  free(src);
 
   _surface = cairo_image_surface_create_for_data(
       data
@@ -784,15 +785,11 @@ Image::decodeJPEGIntoSurface(jpeg_decompress_struct *info) {
 
   if (status) {
     free(data);
-    free(src);
-    return status;
+  } else {
+    _data = data;
   }
 
-  free(src);
-
-  _data = data;
-
-  return CAIRO_STATUS_SUCCESS;
+  return status;
 }
 
 #if CAIRO_VERSION_MINOR >= 10
@@ -809,6 +806,8 @@ Image::decodeJPEGBufferIntoMimeSurface(uint8_t *buf, unsigned len) {
 
   // Set JPEG Error Handler
   if (setjmp(((jpeg_error_manager *) info->err)->setjmp_buffer)) {
+    error(Exception::Error(String::New(info->err->jpeg_message_table[info->err->msg_code])));
+    state = INVALID;
     dispose_jpeg_decompressor(info);
     free(data);
     return createEmptyImageFallback();

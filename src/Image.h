@@ -71,6 +71,7 @@ class Image: public node::ObjectWrap {
         DEFAULT
       , LOADING
       , COMPLETE
+      , INVALID
     } state;
 
     enum {
