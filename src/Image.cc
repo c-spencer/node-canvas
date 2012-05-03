@@ -33,6 +33,47 @@ typedef struct {
 } read_closure_t;
 
 /*
+ * Setup error handler struct for gracefully dealing with jpeg errors.
+ */
+
+typedef struct {
+  struct jpeg_error_mgr pub;
+  jmp_buf setjmp_buffer;
+} jpeg_error_manager;
+
+/*
+ * JPEG error handler for jumping back.
+ */
+
+void
+handle_jpeg_error (j_common_ptr cinfo) {
+  printf("Aborting JPEG decode, REASON: %s\n"
+    , cinfo->err->jpeg_message_table[cinfo->err->msg_code]);
+  longjmp(((jpeg_error_manager *) cinfo->err)->setjmp_buffer, 1);
+}
+
+/*
+ * Helper methods for creating / disposing a JPEG decompressor.
+ */
+
+jpeg_decompress_struct*
+create_jpeg_decompressor() {
+  struct jpeg_decompress_struct *info = (jpeg_decompress_struct *) malloc(sizeof(jpeg_decompress_struct));
+  jpeg_error_manager *err = (jpeg_error_manager *) malloc(sizeof(jpeg_error_manager));
+  info->err = jpeg_std_error((jpeg_error_mgr *) err);
+  err->pub.error_exit = handle_jpeg_error;
+  jpeg_create_decompress(info);
+  return info;
+}
+
+void
+dispose_jpeg_decompressor(jpeg_decompress_struct *info) {
+  jpeg_destroy_decompress(info);
+  free(info->err);
+  free(info);
+}
+
+/*
  * Initialize Image.
  */
 
@@ -685,21 +726,35 @@ static void jpeg_mem_src (j_decompress_ptr cinfo, void* buffer, long nbytes) {
 
 cairo_status_t
 Image::decodeJPEGIntoSurface(jpeg_decompress_struct *info) {
-  int stride = width * 4;
   cairo_status_t status;
+  uint8_t *data = NULL;
+  uint8_t *src = NULL;
 
-  uint8_t *data = (uint8_t *) malloc(width * height * 4);
+  // Set JPEG Error Handler
+  if (setjmp(((jpeg_error_manager *) info->err)->setjmp_buffer)) {
+    dispose_jpeg_decompressor(info);
+    free(data);
+    free(src);
+    return createEmptyImageFallback();
+  }
+
+  jpeg_read_header(info, TRUE);
+  jpeg_start_decompress(info);
+
+  width = info->output_width;
+  height = info->output_height;
+  int stride = width * 4;
+
+  data = (uint8_t *) malloc(width * height * 4);
   if (!data) {
-    jpeg_abort_decompress(info);
-    jpeg_destroy_decompress(info);
+    dispose_jpeg_decompressor(info);
     return CAIRO_STATUS_NO_MEMORY;
   }
 
-  uint8_t *src = (uint8_t *) malloc(width * 3);
+  src = (uint8_t *) malloc(width * 3);
   if (!src) {
+    dispose_jpeg_decompressor(info);
     free(data);
-    jpeg_abort_decompress(info);
-    jpeg_destroy_decompress(info);
     return CAIRO_STATUS_NO_MEMORY;
   }
 
@@ -716,15 +771,15 @@ Image::decodeJPEGIntoSurface(jpeg_decompress_struct *info) {
     }
   }
 
+  dispose_jpeg_decompressor(info);
+
   _surface = cairo_image_surface_create_for_data(
       data
     , CAIRO_FORMAT_ARGB32
     , width
     , height
     , cairo_format_stride_for_width(CAIRO_FORMAT_ARGB32, width));
-
-  jpeg_finish_decompress(info);
-  jpeg_destroy_decompress(info);
+  
   status = cairo_surface_status(_surface);
 
   if (status) {
@@ -749,24 +804,29 @@ Image::decodeJPEGIntoSurface(jpeg_decompress_struct *info) {
 
 cairo_status_t
 Image::decodeJPEGBufferIntoMimeSurface(uint8_t *buf, unsigned len) {
-  // TODO: remove this duplicate logic
-  // JPEG setup
-  struct jpeg_decompress_struct info;
-  struct jpeg_error_mgr err;
-  info.err = jpeg_std_error(&err);
-  jpeg_create_decompress(&info);
+  uint8_t *data = NULL;
+  struct jpeg_decompress_struct *info = create_jpeg_decompressor();
 
-  jpeg_mem_src(&info, buf, len);
+  // Set JPEG Error Handler
+  if (setjmp(((jpeg_error_manager *) info->err)->setjmp_buffer)) {
+    dispose_jpeg_decompressor(info);
+    free(data);
+    return createEmptyImageFallback();
+  }
 
-  jpeg_read_header(&info, 1);
-  jpeg_start_decompress(&info);
-  width = info.output_width;
-  height = info.output_height;
+  jpeg_mem_src(info, buf, len);
+  jpeg_read_header(info, 1);
+  jpeg_start_decompress(info);
+
+  width = info->output_width;
+  height = info->output_height;
+
+  dispose_jpeg_decompressor(info);
 
   // Data alloc
   // 8 pixels per byte using Alpha Channel format to reduce memory requirement.
   int buf_size = height * cairo_format_stride_for_width(CAIRO_FORMAT_A1, width);
-  uint8_t *data = (uint8_t *) malloc(buf_size);
+  data = (uint8_t *) malloc(buf_size);
   if (!data) return CAIRO_STATUS_NO_MEMORY;
 
   // New image surface
@@ -777,9 +837,6 @@ Image::decodeJPEGBufferIntoMimeSurface(uint8_t *buf, unsigned len) {
     , height
     , cairo_format_stride_for_width(CAIRO_FORMAT_A1, width));
 
-  // Cleanup
-  jpeg_abort_decompress(&info);
-  jpeg_destroy_decompress(&info);
   cairo_status_t status = cairo_surface_status(_surface);
 
   if (status) {
@@ -838,21 +895,25 @@ Image::assignDataAsMime(uint8_t *data, int len, const char *mime_type) {
 
 cairo_status_t
 Image::loadJPEGFromBuffer(uint8_t *buf, unsigned len) {
-  // TODO: remove this duplicate logic
-  // JPEG setup
-  struct jpeg_decompress_struct info;
-  struct jpeg_error_mgr err;
-  info.err = jpeg_std_error(&err);
-  jpeg_create_decompress(&info);
+  struct jpeg_decompress_struct *info = create_jpeg_decompressor();
+  jpeg_mem_src(info, buf, len);
+  return decodeJPEGIntoSurface(info);
+}
 
-  jpeg_mem_src(&info, buf, len);
+/*
+ * On JPEG decode failure can need to create an empty surface
+ */
 
-  jpeg_read_header(&info, 1);
-  jpeg_start_decompress(&info);
-  width = info.output_width;
-  height = info.output_height;
-
-  return decodeJPEGIntoSurface(&info);
+cairo_status_t
+Image::createEmptyImageFallback() {
+  width = 1;
+  height = 1;
+  _surface = cairo_image_surface_create(CAIRO_FORMAT_ARGB32, width, height);
+  cairo_t *ctx = cairo_create(_surface);
+  cairo_set_source_rgb(ctx, 224.0/256, 27.0/256, 208.0/256);
+  cairo_paint(ctx);
+  cairo_destroy(ctx);
+  return cairo_surface_status(_surface);
 }
 
 /*
@@ -864,20 +925,9 @@ Image::loadJPEG(FILE *stream) {
   cairo_status_t status;
 
   if (data_mode == DATA_IMAGE) { // Can lazily read in the JPEG.
-    // JPEG setup
-    struct jpeg_decompress_struct info;
-    struct jpeg_error_mgr err;
-    info.err = jpeg_std_error(&err);
-    jpeg_create_decompress(&info);
-
-    jpeg_stdio_src(&info, stream);
-
-    jpeg_read_header(&info, 1);
-    jpeg_start_decompress(&info);
-    width = info.output_width;
-    height = info.output_height;
-
-    status = decodeJPEGIntoSurface(&info);
+    struct jpeg_decompress_struct *info = create_jpeg_decompressor();
+    jpeg_stdio_src(info, stream);
+    status = decodeJPEGIntoSurface(info);
     fclose(stream);
   } else { // We'll need the actual source jpeg data, so read fully.
 #if CAIRO_VERSION_MINOR >= 10

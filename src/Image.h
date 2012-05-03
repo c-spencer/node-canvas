@@ -13,6 +13,7 @@
 #ifdef HAVE_JPEG
 #include <jpeglib.h>
 #include <jerror.h>
+#include <setjmp.h>
 #endif
 
 class Image: public node::ObjectWrap {
@@ -89,6 +90,7 @@ class Image: public node::ObjectWrap {
 
   private:
     cairo_surface_t *_surface;
+    cairo_status_t createEmptyImageFallback();
     uint8_t *_data;
     int _data_len;
     ~Image();
