@@ -754,6 +754,7 @@ Image::decodeJPEGIntoSurface(jpeg_decompress_struct *info) {
 
   if (!data || !src) {
     free(data);
+    free(src);
     dispose_jpeg_decompressor(info);
     return CAIRO_STATUS_NO_MEMORY;
   }
