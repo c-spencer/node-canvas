@@ -762,12 +762,37 @@ Image::decodeJPEGIntoSurface(jpeg_decompress_struct *info) {
     jpeg_read_scanlines(info, &src, 1);
     uint32_t *row = (uint32_t *)(data + stride * y);
     for (int x = 0; x < width; ++x) {
-      int bx = 3 * x;
+      uint8_t r = 0, g = 0, b = 0, k = 0;
+      int bx = info->output_components * x;
+      switch (info->out_color_space) {
+        case JCS_CMYK:
+          // TODO: ICC profiles support?
+          k = src[bx + 3];
+          r = k * src[bx] / 255;
+          g = k * src[bx + 1] / 255;
+          b = k * src[bx + 2] / 255;
+          break;
+        case JCS_RGB:
+        case JCS_GRAYSCALE:
+          if (info->output_components == 1) {
+            r = g = b = src[bx];
+          } else {
+            r = src[bx];
+            g = src[bx + 1];
+            b = src[bx + 2];
+          }
+          break;
+        case JCS_UNKNOWN:
+        case JCS_YCbCr:
+        case JCS_YCCK:
+          // TODO: handle these other colour space options?
+          break;
+      }
       uint32_t *pixel = row + x;
       *pixel = 255 << 24
-        | src[bx + 0] << 16
-        | src[bx + 1] << 8
-        | src[bx + 2];
+             | r << 16
+             | g << 8
+             | b;
     }
   }
 
