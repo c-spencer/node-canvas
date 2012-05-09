@@ -606,27 +606,25 @@ Context2d::DrawImage(const Arguments &args) {
 
   // Start draw
   cairo_save(ctx);
-
   context->savePath();
-  cairo_rectangle(ctx, dx, dy, dw, dh);
-  cairo_clip(ctx);
-  context->restorePath();
 
-  // Scale src
-  if (dw != sw || dh != sh) {
-    float fx = (float) dw / sw;
-    float fy = (float) dh / sh;
-    cairo_scale(ctx, fx, fy);
-    dx /= fx;
-    dy /= fy;
-  }
-
+  cairo_pattern_t *image_pattern = cairo_pattern_create_for_surface(surface);
+  cairo_pattern_set_filter(image_pattern, context->state->patternQuality);
+  
+  cairo_matrix_t pat_matrix;
+  cairo_matrix_init_scale(&pat_matrix, (float) sw / dw, (float) sh / dh);
+  cairo_matrix_translate(&pat_matrix, sx-dx, sy-dy);
+  cairo_pattern_set_matrix(image_pattern, &pat_matrix);
+  
   // Paint
-  cairo_set_source_surface(ctx, surface, dx - sx, dy - sy);
-  cairo_pattern_set_filter(cairo_get_source(ctx), context->state->patternQuality);
-  cairo_paint_with_alpha(ctx, context->state->globalAlpha);
+  cairo_set_source(ctx, image_pattern);
+  cairo_rectangle(ctx, dx, dy, dw, dh);
+  cairo_fill(ctx);
+
+  cairo_pattern_destroy(image_pattern);
 
   cairo_restore(ctx);
+  context->restorePath();
 
   return Undefined();
 }
